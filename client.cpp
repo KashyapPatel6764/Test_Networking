@@ -24,7 +24,7 @@
 #include "protocol.h"
 
 // Configuration
-#define SERVER_IP "127.0.0.1"
+#define SERVER_IP "10.128.0.2"
 #define PORT 9999
 #define BUFFER_SIZE 256
 
