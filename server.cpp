@@ -1,18 +1,13 @@
-/*
- * server.cpp  –  Sprint 1: Basic TCP Server (C++ Version)
- *
- * CSC 4200  –  Program 1 (LED Control)
- *
- * Behaviour:
- *   - Binds to PORT and listens for clients.
- *   - For each connection: receives all data, prints it,
- *     sends an "ACK: <message>" reply, then closes the
- *     client socket.
- *   - Loops forever so it keeps running after every disconnect.
- *
- * Compile:  g++ -Wall -Wextra -g -o server server.cpp
- * Run:      ./server
- */
+// server.cpp - Sprint 2: Header Generation and Parsing
+// CSC 4200 - Program 1 (LED Control)
+//
+// Behaviour:
+// - Binds to PORT and listens for clients
+// - Enters a loop handling new connections without exiting
+// - Receives precisely a 12-byte header
+// - Decodes fields, ensures VERSION=17 using ntohl()
+// - Precisely reads the N-byte payload determined by the length field
+// - Re-encodes the header identically using htonl() and echoes the full message framework back
 
 #include <iostream>
 #include <string>
@@ -22,18 +17,18 @@
 #include <cstring>
 #include <unistd.h>
 #include <cerrno>
-
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-/* ─── Configuration ────────────────────────────────────────────────────── */
-#define PORT        9999
-#define BACKLOG     5       /* max pending connections in listen() queue   */
-#define BUFFER_SIZE 1024
+#include "protocol.h"
 
-/* ─── Helper: send all bytes (handles partial sends) ────────────────────── */
+// Configuration
+#define PORT 9999
+#define BACKLOG 5       // max pending connections in listen() queue
+#define BUFFER_SIZE 256
+
 // TCP does not guarantee that 'send()' will transmit all requested bytes
 // in a single call. We must loop until all bytes are successfully sent.
 static int send_all(int fd, const char *buf, size_t len)
@@ -51,62 +46,113 @@ static int send_all(int fd, const char *buf, size_t len)
     return 0;
 }
 
-/* ─── Handle one connected client ──────────────────────────────────────── */
+// TCP may not receive everything at once, loop until all bytes are received.
+static int recv_all(int fd, char *buf, size_t len)
+{
+    size_t total_recv = 0;
+
+    while (total_recv < len) {
+        ssize_t n = recv(fd, buf + total_recv, len - total_recv, 0);
+        if (n < 0) {
+            perror("[Server] recv() failed");
+            return -1;
+        }
+        if (n == 0) {
+            // Client cleanly closed the connection before full buffer read
+            return 0;
+        }
+        total_recv += static_cast<size_t>(n);
+    }
+    return total_recv; // Success, returned total bytes read
+}
+
+// Handle one connected client through full message sequence
 static void handle_client(int client_fd, struct sockaddr_in *client_addr)
 {
-    char buffer[BUFFER_SIZE];
-    
     // Convert client IP address to a readable string format
     std::string client_ip = inet_ntoa(client_addr->sin_addr);
     int client_port = ntohs(client_addr->sin_port);
 
-    /* Print who connected */
+    // Print who connected
     std::cout << "[Server] Client connected: " << client_ip << ":" << client_port << std::endl;
 
-    /*
-     * recv() loop
-     *
-     * TCP is a byte stream. recv() may return fewer bytes than the
-     * buffer can hold. We call it in a loop until the client closes
-     * the connection (recv returns 0) or an error occurs.
-     *
-     * For Sprint 1 we echo-respond after every chunk we receive.
-     */
     while (true) {
-        memset(buffer, 0, sizeof(buffer));
+        // 1. Receive 12-byte header explicitly
+        char recv_header[HEADER_SIZE];
+        int header_bytes = recv_all(client_fd, recv_header, HEADER_SIZE);
 
-        // Receive data from the client
-        ssize_t bytes_recv = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
-
-        if (bytes_recv < 0) {
-            /* Real error occurred during receive */
-            perror("[Server] recv() failed");
-            break;  // Exit the receive loop for this client
+        if (header_bytes < 0) {
+            perror("[Server] recv_all() failed");
+            break; // Exit the receive loop for this client
+        }
+        if (header_bytes == 0) {
+             std::cout << "[Server] Client disconnected normally." << std::endl;
+             break; // Exit the receive loop for this client
+        }
+        // Enforce strong framing: it should be 12 bytes.
+        if (header_bytes != HEADER_SIZE) {
+            std::cerr << "[Server] Received incorrectly sized header chunk." << std::endl;
+            break;
         }
 
-        if (bytes_recv == 0) {
-            /*
-             * recv() returning 0 means the client closed the connection
-             * (sent TCP FIN). This is the clean shutdown signal.
-             */
-            std::cout << "[Server] Client disconnected (recv returned 0)." << std::endl;
-            break;  // Exit the receive loop for this client
+        // Extract fields using memcpy to safely interpret memory back to integers
+        uint32_t net_version, net_type, net_length;
+        memcpy(&net_version, recv_header, 4);
+        memcpy(&net_type, recv_header + 4, 4);
+        memcpy(&net_length, recv_header + 8, 4);
+
+        // Convert the header arguments back from big-endian format to integers
+        uint32_t recv_version = ntohl(net_version);
+        uint32_t recv_type = ntohl(net_type);
+        uint32_t recv_length = ntohl(net_length);
+
+        std::cout << "[Server] Received Header - Version: " << recv_version 
+                  << ", Type: " << recv_type 
+                  << ", Length: " << recv_length << std::endl;
+
+        // Verify Protocol Version matches Sprint 2 Requirements
+        if (recv_version != VERSION) {
+            std::cerr << "[Server] Version Mismatch! Expected " << VERSION << ", got " << recv_version << std::endl;
+            break; // Disconnect the bad client
         }
 
-        /* bytes_recv > 0: we successfully got data */
-        buffer[bytes_recv] = '\0';   /* Null-terminate the string for safe printing */
-        std::cout << "[Server] Received (" << bytes_recv << " bytes): " << buffer << std::endl;
+        // Dynamically size our payload buffer using the precise network length given
+        char* recv_payload = new char[recv_length + 1];
+        memset(recv_payload, 0, recv_length + 1);
 
-        /* Build response message "ACK: <message>" */
-        std::string response = "ACK: ";
-        response += buffer;
-
-        // Send the complete response back to the client
-        if (send_all(client_fd, response.c_str(), response.length()) < 0) {
-            /* Error already printed inside send_all */
-            break;  // Exit on send failure
+        int payload_bytes = recv_all(client_fd, recv_payload, recv_length);
+        if (payload_bytes < 0) {
+            perror("[Server] Error receiving payload buffer from client.");
+            delete[] recv_payload;
+            break;
         }
-        std::cout << "[Server] Sent response: " << response << std::endl;
+        if (payload_bytes == 0) {
+            delete[] recv_payload;
+            break;
+        }
+
+        std::cout << "[Server] Payload received data (" << payload_bytes << " bytes): " << recv_payload << std::endl;
+
+        // Repackage header exactly to send back the request identically to the client
+        char send_header[HEADER_SIZE];
+        memcpy(send_header, &net_version, 4);
+        memcpy(send_header + 4, &net_type, 4);
+        memcpy(send_header + 8, &net_length, 4);
+
+        // Send exactly 12 bytes of Header back
+        if (send_all(client_fd, send_header, HEADER_SIZE) < 0) {
+            delete[] recv_payload;
+            break;
+        }
+        
+        // Send exactly `N` payload bytes back
+        if (send_all(client_fd, recv_payload, recv_length) < 0) {
+            delete[] recv_payload;
+            break;
+        }
+        
+        std::cout << "[Server] Sent echoed packet response to client." << std::endl;
+        delete[] recv_payload;
     }
 
     // Always close the client socket when done
@@ -115,10 +161,9 @@ static void handle_client(int client_fd, struct sockaddr_in *client_addr)
     std::cout << "[Server] Waiting for next connection...\n" << std::endl;
 }
 
-/* ─── main ──────────────────────────────────────────────────────────────── */
 int main()
 {
-    /* ── 1. Create TCP socket ── */
+    // 1. Create TCP socket
     // AF_INET: IPv4, SOCK_STREAM: TCP, 0: Default protocol
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
@@ -126,11 +171,8 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    /*
-     * Configure socket options:
-     * SO_REUSEADDR lets us immediately rebind to the port after the process exits
-     * without waiting for the OS TIME_WAIT state to expire. Useful during testing.
-     */
+    // Configure socket options:
+    // SO_REUSEADDR lets us immediately rebind to the port after the process exits
     int opt = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
         perror("[Server] setsockopt(SO_REUSEADDR) failed");
@@ -138,13 +180,13 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    /* ── 2. Configure server address and bind ── */
+    // 2. Configure server address and bind
     struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr)); /* Initialize to zeros */
+    memset(&server_addr, 0, sizeof(server_addr)); // Initialize to zeros
     
-    server_addr.sin_family      = AF_INET; /* IPv4 */
-    server_addr.sin_addr.s_addr = INADDR_ANY; /* Accept connections on any local IP (0.0.0.0) */
-    server_addr.sin_port        = htons(PORT); /* Convert port to network byte order */
+    server_addr.sin_family      = AF_INET; // IPv4
+    server_addr.sin_addr.s_addr = INADDR_ANY; // Accept connections on any local IP
+    server_addr.sin_port        = htons(PORT); // Convert port to network byte order
 
     // Bind the socket to the specified address and port
     if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
@@ -153,9 +195,8 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    /* ── 3. Listen for incoming connections ── */
-    // Marks the socket as a passive socket that will be used to accept incoming
-    // connection requests using accept.
+    // 3. Listen for incoming connections
+    // Marks the socket as passive listening
     if (listen(server_fd, BACKLOG) < 0) {
         perror("[Server] listen() failed");
         close(server_fd);
@@ -164,12 +205,8 @@ int main()
 
     std::cout << "[Server] Listening on port " << PORT << "...\n" << std::endl;
 
-    /*
-     * ── 4. Accept loop ──
-     *
-     * The server must NOT exit after one client.
-     * We loop forever, blocking on accept() until a new client connection arrives.
-     */
+    // 4. Accept loop
+    // The server must NOT exit after one client.
     while (true) {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
@@ -179,11 +216,7 @@ int main()
                                (struct sockaddr *)&client_addr,
                                &client_len);
         if (client_fd < 0) {
-            /*
-             * accept() can fail spuriously (e.g., EINTR from a signal).
-             * We print the error and continue rather than crashing the server.
-             */
-            perror("[Server] accept() failed – continuing to wait");
+            perror("[Server] accept() failed - continuing to wait");
             continue;
         }
 
@@ -191,7 +224,7 @@ int main()
         handle_client(client_fd, &client_addr);
     }
 
-    /* Unreachable code, but good practice to include */
+    // Unreachable code, but good practice to include
     close(server_fd);
     return 0;
 }
