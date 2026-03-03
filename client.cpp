@@ -21,17 +21,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-<<<<<<< HEAD
-/* ─── Configuration ────────────────────────────────────────────────────── */
-#define SERVER_IP   "10.128.0.2"
-#define PORT        9999
-=======
 #include "protocol.h"
 
 // Configuration
 #define SERVER_IP "10.128.0.2"
 #define PORT 9999
->>>>>>> 93ab92702ef8c9ed8989ad9be578f9c3a74c1ff2
 #define BUFFER_SIZE 256
 
 // TCP is a stream protocol; a single 'send' call may not send the entire buffer.
@@ -191,3 +185,4 @@ int main()
 
     return 0; // Success
 }
+
