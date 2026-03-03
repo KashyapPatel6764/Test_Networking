@@ -1,12 +1,13 @@
-// client.cpp - Sprint 2: Header Generation and Parsing
+// client.cpp - Sprint 3: Float Payload Transmission and Verification
 // CSC 4200 - Program 1 (LED Control)
 //
 // Behaviour:
 // - Connects to SERVER_IP:PORT
-// - Constructs a 12-byte header (Version=17, Type=1, Length=N)
+// - Constructs a 12-byte header (Version=17, Type=2, Length=4)
 // - Uses htonl() to convert header fields to network byte order
-// - Sends the header, then sends the payload string
-// - Receives the echoed generic packet and validates it against the original payload
+// - Serializes a float value into a 4-byte payload using memcpy()
+// - Sends the header, then sends the 4-byte float payload
+// - Receives the echoed packet and verifies the returned float matches the original
 // - Closes the socket cleanly
 
 #include <iostream>
@@ -16,6 +17,7 @@
 #include <cstring>
 #include <unistd.h>
 #include <cerrno>
+#include <cmath>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -26,7 +28,6 @@
 // Configuration
 #define SERVER_IP "10.128.0.2"
 #define PORT 9999
-#define BUFFER_SIZE 256
 
 // TCP is a stream protocol; a single 'send' call may not send the entire buffer.
 // This function loops until all bytes are reliably pushed to the OS buffers.
@@ -96,21 +97,28 @@ int main()
     }
     std::cout << "[Client] Successfully connected to " << SERVER_IP << ":" << PORT << std::endl;
 
-    // 4. Construct the header and payload
-    std::string payload = "Hello from Client!";
-    uint32_t payload_len = static_cast<uint32_t>(payload.length());
-    
+    // 4. Construct the header and float payload
+    // Sprint 3: send a float value as the payload
+    float send_float = 0.35f;
+    uint32_t payload_len = sizeof(float); // 4 bytes
+
+    std::cout << "[Client] Preparing to send float value: " << send_float << std::endl;
+
     // Convert header fields to network byte order using htonl()
     uint32_t net_version = htonl(VERSION);
-    uint32_t net_type = htonl(TYPE_ECHO);
-    uint32_t net_length = htonl(payload_len);
+    uint32_t net_type    = htonl(TYPE_FLOAT);  // Type 2 for float
+    uint32_t net_length  = htonl(payload_len); // Length = 4
 
     char header_buffer[HEADER_SIZE];
     
-    // Copy each field into the header buffer sequentially
+    // Copy each field into the header buffer sequentially using memcpy()
     memcpy(header_buffer, &net_version, 4);
     memcpy(header_buffer + 4, &net_type, 4);
     memcpy(header_buffer + 8, &net_length, 4);
+
+    // Serialize the float into a payload buffer using memcpy (safe, no raw struct)
+    char payload_buffer[sizeof(float)];
+    memcpy(payload_buffer, &send_float, sizeof(float));
 
     // Send the 12-byte header
     if (send_all(local_sock, header_buffer, HEADER_SIZE) < 0) {
@@ -118,12 +126,12 @@ int main()
         exit(EXIT_FAILURE);
     }
     
-    // Send the payload
-    if (send_all(local_sock, payload.c_str(), payload_len) < 0) {
+    // Send the 4-byte float payload
+    if (send_all(local_sock, payload_buffer, payload_len) < 0) {
         close(local_sock);
         exit(EXIT_FAILURE);
     }
-    std::cout << "[Client] Sent header and message (" << payload_len << " bytes payload)." << std::endl;
+    std::cout << "[Client] Sent header (Type=2, Length=4) and float payload." << std::endl;
 
     // 5. Receive the server's response
     // First, strictly receive the 12-byte header response
@@ -148,36 +156,37 @@ int main()
 
     // Convert from network byte order back to host byte order using ntohl()
     uint32_t recv_version = ntohl(recv_net_version);
-    uint32_t recv_type = ntohl(recv_net_type);
-    uint32_t recv_length = ntohl(recv_net_length);
+    uint32_t recv_type    = ntohl(recv_net_type);
+    uint32_t recv_length  = ntohl(recv_net_length);
 
     std::cout << "[Client] Received Header - Version: " << recv_version 
               << ", Type: " << recv_type 
               << ", Length: " << recv_length << std::endl;
 
-    // Receive the exactly measured payload
-    char* recv_payload = new char[recv_length + 1];
-    memset(recv_payload, 0, recv_length + 1);
+    // Receive the exactly measured payload (should be 4 bytes for a float)
+    char recv_payload[sizeof(float)];
+    memset(recv_payload, 0, sizeof(float));
 
     int payload_bytes = recv_all(local_sock, recv_payload, recv_length);
     if (payload_bytes < 0) {
-        delete[] recv_payload;
         close(local_sock);
         exit(EXIT_FAILURE);
     }
 
-    // Print the received string
-    std::string received_msg(recv_payload, recv_length);
-    std::cout << "[Client] Received Payload: " << received_msg << std::endl;
+    // Extract the returned float from the payload using memcpy (safe deserialization)
+    float recv_float;
+    memcpy(&recv_float, recv_payload, sizeof(float));
 
-    // Check if the received message matches our original payload
-    if (received_msg == payload) {
-        std::cout << "[Client] Verification SUCCESS: Sent payload matches received payload." << std::endl;
+    std::cout << "[Client] Received float value: " << recv_float << std::endl;
+
+    // Verify: compare the sent float with the received float
+    if (recv_float == send_float) {
+        std::cout << "[Client] Verification SUCCESS: Sent float (" << send_float 
+                  << ") matches received float (" << recv_float << ")." << std::endl;
     } else {
-        std::cout << "[Client] Verification FAILED: Sent payload does not match received payload." << std::endl;
+        std::cout << "[Client] Verification FAILED: Sent float (" << send_float 
+                  << ") does NOT match received float (" << recv_float << ")." << std::endl;
     }
-
-    delete[] recv_payload;
 
     // 6. Close socket cleanly
     close(local_sock);
@@ -185,3 +194,4 @@ int main()
 
     return 0; // Success
 }
+

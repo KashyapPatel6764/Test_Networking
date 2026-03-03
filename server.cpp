@@ -1,4 +1,4 @@
-// server.cpp - Sprint 2: Header Generation and Parsing
+// server.cpp - Sprint 3: Header Generation, Parsing, and Float Payload
 // CSC 4200 - Program 1 (LED Control)
 //
 // Behaviour:
@@ -6,12 +6,13 @@
 // - Enters a loop handling new connections without exiting
 // - Receives precisely a 12-byte header
 // - Decodes fields, ensures VERSION=17 using ntohl()
-// - Precisely reads the N-byte payload determined by the length field
-// - Re-encodes the header identically using htonl() and echoes the full message framework back
+// - Dispatches based on Message Type:
+//     Type 1 (ECHO)  : reads N-byte string payload, prints and echoes it
+//     Type 2 (FLOAT) : reads 4-byte float payload, prints and echoes it
+// - Re-encodes the header identically using htonl() and echoes the full packet back
 
 #include <iostream>
 #include <string>
-#include <vector>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -27,7 +28,6 @@
 // Configuration
 #define PORT 9999
 #define BACKLOG 5       // max pending connections in listen() queue
-#define BUFFER_SIZE 256
 
 // TCP does not guarantee that 'send()' will transmit all requested bytes
 // in a single call. We must loop until all bytes are successfully sent.
@@ -90,7 +90,7 @@ static void handle_client(int client_fd, struct sockaddr_in *client_addr)
              break; // Exit the receive loop for this client
         }
         // Enforce strong framing: it should be 12 bytes.
-        if (header_bytes != HEADER_SIZE) {
+        if (static_cast<size_t>(header_bytes) != HEADER_SIZE) {
             std::cerr << "[Server] Received incorrectly sized header chunk." << std::endl;
             break;
         }
@@ -103,20 +103,20 @@ static void handle_client(int client_fd, struct sockaddr_in *client_addr)
 
         // Convert the header arguments back from big-endian format to integers
         uint32_t recv_version = ntohl(net_version);
-        uint32_t recv_type = ntohl(net_type);
-        uint32_t recv_length = ntohl(net_length);
+        uint32_t recv_type    = ntohl(net_type);
+        uint32_t recv_length  = ntohl(net_length);
 
         std::cout << "[Server] Received Header - Version: " << recv_version 
                   << ", Type: " << recv_type 
                   << ", Length: " << recv_length << std::endl;
 
-        // Verify Protocol Version matches Sprint 2 Requirements
+        // Verify Protocol Version
         if (recv_version != VERSION) {
             std::cerr << "[Server] Version Mismatch! Expected " << VERSION << ", got " << recv_version << std::endl;
             break; // Disconnect the bad client
         }
 
-        // Dynamically size our payload buffer using the precise network length given
+        // 2. Receive the payload (exactly recv_length bytes)
         char* recv_payload = new char[recv_length + 1];
         memset(recv_payload, 0, recv_length + 1);
 
@@ -131,9 +131,33 @@ static void handle_client(int client_fd, struct sockaddr_in *client_addr)
             break;
         }
 
-        std::cout << "[Server] Payload received data (" << payload_bytes << " bytes): " << recv_payload << std::endl;
+        // 3. Dispatch based on Message Type
+        if (recv_type == TYPE_ECHO) {
+            // ---- Sprint 2: String echo ----
+            std::cout << "[Server] Type 1 (String Echo) - Payload (" << payload_bytes 
+                      << " bytes): " << recv_payload << std::endl;
 
-        // Repackage header exactly to send back the request identically to the client
+        } else if (recv_type == TYPE_FLOAT) {
+            // ---- Sprint 3: Float echo ----
+            // Interpret the 4-byte payload as a float using memcpy (safe, no aliasing)
+            if (recv_length != sizeof(float)) {
+                std::cerr << "[Server] Type 2 (Float) expects 4-byte payload, got " 
+                          << recv_length << " bytes." << std::endl;
+                delete[] recv_payload;
+                break;
+            }
+            float recv_float;
+            memcpy(&recv_float, recv_payload, sizeof(float));
+            std::cout << "[Server] Type 2 (Float Echo) - Received float value: " 
+                      << recv_float << std::endl;
+
+        } else {
+            std::cerr << "[Server] Unknown message type: " << recv_type << std::endl;
+            delete[] recv_payload;
+            break;
+        }
+
+        // 4. Echo back: repackage the exact same header + payload
         char send_header[HEADER_SIZE];
         memcpy(send_header, &net_version, 4);
         memcpy(send_header + 4, &net_type, 4);

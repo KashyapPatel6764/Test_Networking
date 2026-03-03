@@ -1,5 +1,5 @@
-# Makefile – Sprint 1: Basic TCP Client-Server (C++ Version)
-# CSC 4200, Program 1 (LED Control)
+# Makefile – Sprint 3: LED Control Client-Server (C++ Version)
+# CSC 4200, Program 1
 #
 # Targets:
 #   all    – build both server and client (default)
@@ -14,11 +14,12 @@ CXXFLAGS = -Wall -Wextra -g -std=c++11
 
 all: server client
 
-server: server.cpp
+server: server.cpp protocol.h
 	$(CXX) $(CXXFLAGS) -o server server.cpp
 
-client: client.cpp
+client: client.cpp protocol.h
 	$(CXX) $(CXXFLAGS) -o client client.cpp
 
 clean:
 	rm -f server client
+
