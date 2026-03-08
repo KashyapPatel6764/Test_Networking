@@ -11,8 +11,8 @@
 const uint32_t VERSION = 17;
 
 // Message types
-const uint32_t TYPE_ECHO  = 1;   // Sprint 2: string echo
-const uint32_t TYPE_FLOAT = 2;   // Sprint 3: float echo
+const uint32_t TYPE_ECHO  = 1;   
+const uint32_t TYPE_FLOAT = 2;   
 
 // The fixed size of the header in bytes (Version: 4 Bytes, Type: 4 Bytes, Length: 4 Bytes).
 const size_t HEADER_SIZE = 12;

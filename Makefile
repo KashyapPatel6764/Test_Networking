@@ -1,6 +1,6 @@
 # Makefile – Sprint 3: LED Control Client-Server (C++ Version)
 # CSC 4200, Program 1
-#
+
 # Targets:
 #   all    – build both server and client (default)
 #   server – build server binary
