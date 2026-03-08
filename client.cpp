@@ -1,17 +1,14 @@
-/*
- * client.cpp  –  Sprint 1: Basic TCP Client (C++ Version)
- *
- * CSC 4200  –  Program 1 (LED Control)
- *
- * Behaviour:
- *   - Connects to SERVER_IP:PORT.
- *   - Sends the message "HELLO".
- *   - Receives the server's response and prints it.
- *   - Closes the socket cleanly.
- *
- * Compile:  g++ -Wall -Wextra -g -o client client.cpp
- * Run:      ./client
- */
+// client.cpp - Sprint 3: Float Payload Transmission and Verification
+// CSC 4200 - Program 1 (LED Control)
+//
+// Behaviour:
+// - Connects to SERVER_IP:PORT
+// - Constructs a 12-byte header (Version=17, Type=2, Length=4)
+// - Uses htonl() to convert header fields to network byte order
+// - Serializes a float value into a 4-byte payload using memcpy()
+// - Sends the header, then sends the 4-byte float payload
+// - Receives the echoed packet and verifies the returned float matches the original
+// - Closes the socket cleanly
 
 #include <iostream>
 #include <string>
@@ -20,18 +17,18 @@
 #include <cstring>
 #include <unistd.h>
 #include <cerrno>
-
+#include <cmath>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-/* ─── Configuration ────────────────────────────────────────────────────── */
-#define SERVER_IP   "10.128.0.2"
-#define PORT        9999
-#define BUFFER_SIZE 256
+#include "protocol.h"
 
-/* ─── Helper: send all bytes (handles partial sends) ────────────────────── */
+// Configuration
+#define SERVER_IP "10.128.0.2"
+#define PORT 9999
+
 // TCP is a stream protocol; a single 'send' call may not send the entire buffer.
 // This function loops until all bytes are reliably pushed to the OS buffers.
 static int send_all(int fd, const char *buf, size_t len)
@@ -49,36 +46,50 @@ static int send_all(int fd, const char *buf, size_t len)
     return 0;
 }
 
-/* ─── main ──────────────────────────────────────────────────────────────── */
+// TCP may not receive everything at once, loop until all bytes are received.
+static int recv_all(int fd, char *buf, size_t len)
+{
+    size_t total_recv = 0;
+
+    while (total_recv < len) {
+        ssize_t n = recv(fd, buf + total_recv, len - total_recv, 0);
+        if (n < 0) {
+            perror("[Client] recv() failed");
+            return -1;
+        }
+        if (n == 0) {
+            // Connection closed by server
+            return 0;
+        }
+        total_recv += static_cast<size_t>(n);
+    }
+    return total_recv; // Success, returned total bytes read
+}
+
 int main()
 {
-    /* ── 1. Create local Socket ── */
-    // AF_INET: IPv4, SOCK_STREAM: TCP protocol
+    // 1. Create local Socket (IPv4, TCP)
     int local_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (local_sock < 0) {
         perror("[Client] socket creation failed");
         exit(EXIT_FAILURE);
     }
 
-    /* ── 2. Configure server address ── */
+    // 2. Configure server address structure
     struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr)); /* Initialize struct to zero */
+    memset(&server_addr, 0, sizeof(server_addr)); // Initialize to zero
     
-    server_addr.sin_family = AF_INET; /* IPv4 */
-    server_addr.sin_port   = htons(PORT); /* Convert port to network byte order */
+    server_addr.sin_family = AF_INET; // IPv4
+    server_addr.sin_port = htons(PORT); // Convert port to network byte order
 
-    /*
-     * inet_pton() converts a dotted-decimal IP string (e.g., "127.0.0.1")
-     * to its binary representation in network byte order.
-     */
+    // Converts dotted-decimal IP string to binary representation
     if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
-        perror("[Client] inet_pton() failed – invalid address or format");
+        perror("[Client] inet_pton() failed - invalid address or format");
         close(local_sock);
         exit(EXIT_FAILURE);
     }
 
-    /* ── 3. Connect to the server ── */
-    // Initiate connection to the server's TCP socket
+    // 3. Connect to the server
     if (connect(local_sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("[Client] connection to server failed");
         close(local_sock);
@@ -86,50 +97,98 @@ int main()
     }
     std::cout << "[Client] Successfully connected to " << SERVER_IP << ":" << PORT << std::endl;
 
-    /* ── 4. Send message ── */
-    std::string message = "HELLO";
-    size_t msg_len = message.length();
+    // 4. Construct the header and float payload
+    // Sprint 3: send a float value as the payload
+    float send_float = 0.35f;
+    uint32_t payload_len = sizeof(float); // 4 bytes
 
-    // Use our helper to ensure the entire message is sent
-    if (send_all(local_sock, message.c_str(), msg_len) < 0) {
-        /* Error already printed inside send_all */
-        close(local_sock);
-        exit(EXIT_FAILURE);
-    }
-    std::cout << "[Client] Message sent to server (" << msg_len << " bytes): " << message << std::endl;
+    std::cout << "[Client] Preparing to send float value: " << send_float << std::endl;
 
-    /*
-     * ── 5. Receive response ──
-     *
-     * In TCP, 'recv' might return fewer bytes than what was actually sent
-     * in a single chunk. We wait to receive the server's ACK.
-     */
-    char buffer[BUFFER_SIZE];
-    memset(buffer, 0, sizeof(buffer));
+    // Convert header fields to network byte order using htonl()
+    uint32_t net_version = htonl(VERSION);
+    uint32_t net_type    = htonl(TYPE_FLOAT);  // Type 2 for float
+    uint32_t net_length  = htonl(payload_len); // Length = 4
 
-    // Wait to receive the reply from the server
-    ssize_t bytes_recv = recv(local_sock, buffer, BUFFER_SIZE - 1, 0);
+    char header_buffer[HEADER_SIZE];
     
-    if (bytes_recv < 0) {
-        // A network error occurred
-        perror("[Client] recv failed");
+    // Copy each field into the header buffer sequentially using memcpy()
+    memcpy(header_buffer, &net_version, 4);
+    memcpy(header_buffer + 4, &net_type, 4);
+    memcpy(header_buffer + 8, &net_length, 4);
+
+    // Serialize the float into a payload buffer using memcpy (safe, no raw struct)
+    char payload_buffer[sizeof(float)];
+    memcpy(payload_buffer, &send_float, sizeof(float));
+
+    // Send the 12-byte header
+    if (send_all(local_sock, header_buffer, HEADER_SIZE) < 0) {
+        close(local_sock);
+        exit(EXIT_FAILURE);
+    }
+    
+    // Send the 4-byte float payload
+    if (send_all(local_sock, payload_buffer, payload_len) < 0) {
+        close(local_sock);
+        exit(EXIT_FAILURE);
+    }
+    std::cout << "[Client] Sent header (Type=2, Length=4) and float payload." << std::endl;
+
+    // 5. Receive the server's response
+    // First, strictly receive the 12-byte header response
+    char recv_header[HEADER_SIZE];
+    int header_bytes = recv_all(local_sock, recv_header, HEADER_SIZE);
+
+    if (header_bytes < 0) {
+        close(local_sock);
+        exit(EXIT_FAILURE);
+    }
+    if (header_bytes == 0) {
+        std::cout << "[Client] Server closed connection without response." << std::endl;
+        close(local_sock);
+        return 0;
+    }
+
+    // Extract fields back from the received header buffer
+    uint32_t recv_net_version, recv_net_type, recv_net_length;
+    memcpy(&recv_net_version, recv_header, 4);
+    memcpy(&recv_net_type, recv_header + 4, 4);
+    memcpy(&recv_net_length, recv_header + 8, 4);
+
+    // Convert from network byte order back to host byte order using ntohl()
+    uint32_t recv_version = ntohl(recv_net_version);
+    uint32_t recv_type    = ntohl(recv_net_type);
+    uint32_t recv_length  = ntohl(recv_net_length);
+
+    std::cout << "[Client] Received Header - Version: " << recv_version 
+              << ", Type: " << recv_type 
+              << ", Length: " << recv_length << std::endl;
+
+    // Receive the exactly measured payload (should be 4 bytes for a float)
+    char recv_payload[sizeof(float)];
+    memset(recv_payload, 0, sizeof(float));
+
+    int payload_bytes = recv_all(local_sock, recv_payload, recv_length);
+    if (payload_bytes < 0) {
         close(local_sock);
         exit(EXIT_FAILURE);
     }
 
-    if (bytes_recv == 0) {
-        /*
-         * Server closed the connection before sending a response.
-         * This usually means the server process ended prematurely.
-         */
-        std::cout << "[Client] Server closed connection without sending a response." << std::endl;
+    // Extract the returned float from the payload using memcpy (safe deserialization)
+    float recv_float;
+    memcpy(&recv_float, recv_payload, sizeof(float));
+
+    std::cout << "[Client] Received float value: " << recv_float << std::endl;
+
+    // Verify: compare the sent float with the received float
+    if (recv_float == send_float) {
+        std::cout << "[Client] Verification SUCCESS: Sent float (" << send_float 
+                  << ") matches received float (" << recv_float << ")." << std::endl;
     } else {
-        buffer[bytes_recv] = '\0'; // Null-terminate the received data for safe C-string printing
-        std::cout << "[Client] Response from server (" << bytes_recv << " bytes): " << buffer << std::endl;
+        std::cout << "[Client] Verification FAILED: Sent float (" << send_float 
+                  << ") does NOT match received float (" << recv_float << ")." << std::endl;
     }
 
-    /* ── 6. Close socket cleanly ── */
-    // Free the file descriptor and close the TCP connection
+    // 6. Close socket cleanly
     close(local_sock);
     std::cout << "[Client] Socket closed. Client exiting." << std::endl;
 
